@@ -1,0 +1,23 @@
+{
+  "name": "ireader-extension-repo",
+  "version": "1.0.0",
+  "description": "Repositorio de extensiones/plugins para IReader / LNReader",
+  "main": "scripts/build.js",
+  "scripts": {
+    "build": "node scripts/build.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "ireader",
+    "lnreader",
+    "extensions",
+    "plugins",
+    "novels"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "esbuild": "^0.20.0",
+    "typescript": "^5.0.0"
+  }
+}
