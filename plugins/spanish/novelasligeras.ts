@@ -24,7 +24,6 @@ function slugify(text: string): string {
  * Limpia y resuelve URLs de imágenes de lazy-loading o srcset
  */
 function extractImageUrl(elementHtml: string): string {
-  // Buscar data-src, data-lazy-src, data-orig-file, o src
   const lazyMatch = elementHtml.match(/data-(?:lazy-)?src=["']([^"']+)["']/i);
   if (lazyMatch && lazyMatch[1]) return lazyMatch[1].trim();
 
@@ -49,47 +48,39 @@ function parseNovelListHtml(html: string): NovelItem[] {
   const novels: NovelItem[] = [];
   const articleRegex = /<article[\s\S]*?<\/article>|<div[^>]*class=["'][^"']*(?:post|entry-card|elementor-post|novel-item)[^"']*["'][\s\S]*?<\/div>\s*<\/div>/gi;
   
-  let match: RegExpExecArray | null;
   const matches = html.match(articleRegex) || [];
 
   for (const block of matches) {
-    // Extraer enlace y título
     const titleLinkMatch = block.match(/<a[^>]+href=["']([^"']+)["'][^>]*>(?:<h[1-6][^>]*>)?\s*([^<]+)\s*(?:<\/h[1-6]>)?<\/a>/i) ||
                            block.match(/<h[1-6][^>]*class=["'][^"']*entry-title[^"']*["'][^>]*>\s*<a[^>]+href=["']([^"']+)["'][^>]*>([^<]+)<\/a>/i);
     
     if (!titleLinkMatch) continue;
 
     const fullUrl = titleLinkMatch[1];
-    let name = titleLinkMatch[2].trim();
-
-    // Si el título tenía tags HTML internos, limpiarlos
-    name = name.replace(/<[^>]+>/g, "").trim();
+    let name = titleLinkMatch[2].trim().replace(/<[^>]+>/g, "").trim();
 
     if (!name || name.length < 2) continue;
 
-    // Normalizar ruta (path)
     let path = fullUrl;
     if (path.startsWith("https://novelasligeras.net")) {
       path = path.replace("https://novelasligeras.net", "");
     }
 
-    // Extraer portada
     const cover = extractImageUrl(block);
 
-    // Evitar duplicados
     if (!novels.some((n) => n.path === path)) {
       novels.push({ name, path, cover });
     }
   }
 
-  // Fallback: Si la regex estricta de articles no encontró suficientes, buscar etiquetas <a> directas a novelas
+  // Fallback si no encuentra bloques de artículo
   if (novels.length === 0) {
     const linkRegex = /<a[^>]+href=["'](https?:\/\/novelasligeras\.net\/[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+    let match: RegExpExecArray | null;
     while ((match = linkRegex.exec(html)) !== null) {
       const href = match[1];
       const innerHtml = match[2];
       
-      // Filtrar páginas administrativas o no novelas
       if (href.includes("/category/") || href.includes("/tag/") || href.includes("/page/") || href.includes("/contacto/")) {
         continue;
       }
@@ -115,7 +106,7 @@ export const plugin: Plugin = {
   name: "Novelas Ligeras",
   icon: "icon.png",
   site: "https://novelasligeras.net",
-  version: "1.0.0",
+  version: "1.0.1",
   lang: "es",
 
   async popularNovels(pageNo: number): Promise<NovelItem[]> {
@@ -123,15 +114,24 @@ export const plugin: Plugin = {
       ? `${this.site}/` 
       : `${this.site}/page/${pageNo}/`;
 
-    try {
-      const response = await fetch(url, { headers: DEFAULT_HEADERS });
-      if (!response.ok) return [];
-      const html = await response.text();
-      return parseNovelListHtml(html);
-    } catch (e) {
-      console.error("Error en popularNovels:", e);
-      return [];
+    const response = await fetch(url, { headers: DEFAULT_HEADERS });
+
+    if (response.status === 403 || response.status === 503) {
+      throw new Error("Protección Cloudflare activa. Por favor abre el WebView en IReader (icono de la web) para resolver la verificación.");
     }
+
+    const html = await response.text();
+
+    if (html.includes("Just a moment...") || html.includes("cf-challenge-running") || html.includes("Attention Required!")) {
+      throw new Error("Protección Cloudflare activa. Abre el WebView para autenticar tu navegador.");
+    }
+
+    const list = parseNovelListHtml(html);
+    if (list.length === 0) {
+      throw new Error("No se encontraron novelas. Si el sitio no carga en WebView, puede requerir VPN o solución de Cloudflare.");
+    }
+
+    return list;
   },
 
   async parseNovelAndChapters(novelPath: string): Promise<NovelDetails> {
@@ -139,17 +139,14 @@ export const plugin: Plugin = {
     const response = await fetch(url, { headers: DEFAULT_HEADERS });
     const html = await response.text();
 
-    // 1. Nombre / Título
     const titleMatch = html.match(/<h1[^>]*class=["'][^"']*(?:entry-title|novel-title)[^"']*["'][^>]*>([^<]+)<\/h1>/i) ||
                        html.match(/<h1[^>]*>([^<]+)<\/h1>/i);
     const name = titleMatch ? titleMatch[1].trim() : "Sin título";
 
-    // 2. Portada
     const coverMatch = html.match(/<div[^>]*class=["'][^"']*(?:post-thumbnail|novel-cover|entry-content)[^"']*["'][\s\S]*?<img[^>]+>/i) ||
                        html.match(/<img[^>]+class=["'][^"']*wp-post-image[^"']*["'][^>]*>/i);
     const cover = coverMatch ? extractImageUrl(coverMatch[0]) : extractImageUrl(html);
 
-    // 3. Sinopsis / Resumen
     let summary = "";
     const summaryBlockMatch = html.match(/<div[^>]*class=["'][^"']*entry-content[^"']*["'][^>]*>([\s\S]*?)<\/div>/i);
     if (summaryBlockMatch) {
@@ -163,7 +160,6 @@ export const plugin: Plugin = {
       }
     }
 
-    // 4. Géneros / Tags (Sistema de Etiquetas)
     const genres: string[] = [];
     const tagRegex = /<a[^>]+href=["'][^"']*\/(?:tag|genero|category|etiqueta)\/([^"']+)\/["'][^>]*>([^<]+)<\/a>/gi;
     let tagMatch: RegExpExecArray | null;
@@ -174,7 +170,6 @@ export const plugin: Plugin = {
       }
     }
 
-    // 5. Estado y Autor
     let status = "En emisión";
     if (html.toLowerCase().includes("finalizado") || html.toLowerCase().includes("completado")) {
       status = "Finalizado";
@@ -187,7 +182,6 @@ export const plugin: Plugin = {
       author = authorMatch[1].trim();
     }
 
-    // 6. Lista de Capítulos
     const chapters: ChapterItem[] = [];
     const chapterLinkRegex = /<a[^>]+href=["'](https?:\/\/novelasligeras\.net\/[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
     let chMatch: RegExpExecArray | null;
@@ -197,14 +191,12 @@ export const plugin: Plugin = {
       const chHref = chMatch[1];
       const chTitleRaw = chMatch[2].replace(/<[^>]+>/g, "").trim();
 
-      // Verificar si es un enlace de capítulo
       const isChapterLink = /capitulo|capítul|cap[\s.-]*\d+|\b\d+\b/i.test(chHref) ||
                             /capitulo|capítul|cap[\s.-]*\d+/i.test(chTitleRaw);
 
       if (isChapterLink && chTitleRaw.length > 0 && !chHref.includes("#")) {
         let chPath = chHref.replace("https://novelasligeras.net", "");
         
-        // Evitar duplicados
         if (!chapters.some((c) => c.path === chPath)) {
           chapters.push({
             name: chTitleRaw || `Capítulo ${chapterNumber}`,
@@ -232,7 +224,6 @@ export const plugin: Plugin = {
     const response = await fetch(url, { headers: DEFAULT_HEADERS });
     const html = await response.text();
 
-    // Extraer bloque de contenido principal del capítulo (.entry-content)
     const contentMatch = html.match(/<div[^>]*class=["'][^"']*entry-content[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*<!--/i) ||
                          html.match(/<div[^>]*class=["'][^"']*entry-content[^"']*["'][^>]*>([\s\S]*?)<\/div>/i);
 
@@ -242,7 +233,6 @@ export const plugin: Plugin = {
 
     let chapterContent = contentMatch[1];
 
-    // --- PROCESAMIENTO DE IMÁGENES DENTRO DEL CAPÍTULO (ILUSTRACIONES INTEGRADAS) ---
     chapterContent = chapterContent.replace(/<img[^>]+>/gi, (imgTag) => {
       const realSrc = extractImageUrl(imgTag);
       if (realSrc) {
@@ -251,7 +241,6 @@ export const plugin: Plugin = {
       return imgTag;
     });
 
-    // Limpieza de scripts, estilos, publicidad y navegación interna
     chapterContent = chapterContent
       .replace(/<script[\s\S]*?<\/script>/gi, "")
       .replace(/<style[\s\S]*?<\/style>/gi, "")
@@ -263,8 +252,6 @@ export const plugin: Plugin = {
 
   async searchNovels(searchTerm: string, pageNo: number): Promise<NovelItem[]> {
     const term = searchTerm.trim();
-
-    // --- SISTEMA DE BÚSQUEDA AVANZADA (TAGS & GÉNEROS) ---
     let searchUrl = "";
 
     if (term.toLowerCase().startsWith("tag:") || term.toLowerCase().startsWith("etiqueta:")) {
@@ -278,7 +265,6 @@ export const plugin: Plugin = {
         ? `${this.site}/genero/${genreSlug}/` 
         : `${this.site}/genero/${genreSlug}/page/${pageNo}/`;
     } else {
-      // Búsqueda estándar por palabra clave
       searchUrl = pageNo === 1
         ? `${this.site}/?s=${encodeURIComponent(term)}`
         : `${this.site}/page/${pageNo}/?s=${encodeURIComponent(term)}`;
@@ -291,7 +277,6 @@ export const plugin: Plugin = {
       
       let results = parseNovelListHtml(html);
 
-      // Si la búsqueda estándar no devuelve resultados en la página 1, realizar búsqueda profunda por Tag/Etiqueta
       if (results.length === 0 && pageNo === 1 && !term.includes(":")) {
         const tagSlug = slugify(term);
         const tagUrl = `${this.site}/tag/${tagSlug}/`;
@@ -301,9 +286,7 @@ export const plugin: Plugin = {
             const tagHtml = await tagResponse.text();
             results = parseNovelListHtml(tagHtml);
           }
-        } catch (_) {
-          // Ignorar error de fallback
-        }
+        } catch (_) {}
       }
 
       return results;
