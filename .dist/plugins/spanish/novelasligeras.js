@@ -1,214 +1,228 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 
-var cheerio;
-try { cheerio = require("cheerio"); } catch(e) { cheerio = null; }
+var cheerio = require("cheerio");
+var fetchModule = require("@libs/fetch");
+var fetchApi = fetchModule.fetchApi || fetchModule;
+var fetchText = fetchModule.fetchText || function(url, options) {
+  return fetchApi(url, options).then(function(r) { return r.text(); });
+};
+var novelStatus = require("@libs/novelStatus");
+var NovelStatus = novelStatus.NovelStatus || { Ongoing: "Ongoing", Completed: "Completed", Unknown: "Unknown" };
 
 var SITE = "https://novelasligeras.net";
 
-function parseHTML(html, selector) {
-  if (cheerio) {
-    return cheerio.load(html);
-  }
-  return null;
-}
+var NovelasLigerasPlugin = function () {
+  this.id = "novelasligeras-net";
+  this.name = "Novelas Ligeras (NOVA)";
+  this.version = "2.0.0";
+  this.icon = "https://raw.githubusercontent.com/MaxRay1/Extensiones-IReader/main/icon.png";
+  this.site = SITE;
+  this.filters = undefined;
+};
 
-function extractAttr(tag, attr) {
-  var re = new RegExp(attr + '=["\']([^"\']+)["\']', 'i');
-  var m = tag.match(re);
-  return m ? m[1] : "";
-}
+NovelasLigerasPlugin.prototype.popularNovels = function (pageNo, options) {
+  var url = SITE + "/?s=&post_type=product&paged=" + (pageNo || 1);
+  return fetchText(url).then(function (body) {
+    var $ = cheerio.load(body);
+    var novels = [];
+    var seen = {};
 
-function extractNovels(html) {
-  var novels = [];
-  var cellRegex = /<div[^>]*class="[^"]*wf-cell[^"]*"[^>]*data-name="([^"]*)"[^>]*>[\s\S]*?<a[^>]+href="([^"]+)"[^>]*class="[^"]*alignnone[^"]*"[^>]*>[\s\S]*?<img[^>]+data-src="([^"]*)"[^>]*>[\s\S]*?<h4[^>]*class="[^"]*entry-title[^"]*"[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*(?:title="([^"]*)")?[^>]*>([^<]*)<\/a>/gi;
-  var match;
-  var seen = {};
+    $("div.wf-cell").each(function (i, el) {
+      var cell = $(el);
+      var linkEl = cell.find("h4.entry-title a").first();
+      var imgEl = cell.find("img.attachment-woocommerce_thumbnail, img.iso-lazy-load, img.preload-me").first();
 
-  while ((match = cellRegex.exec(html)) !== null) {
-    var name = match[5] || match[6] || match[1];
-    var path = (match[4] || match[2]).replace(SITE, "");
-    var cover = match[3] || "";
+      var name = linkEl.attr("title") || linkEl.text().trim();
+      var href = linkEl.attr("href") || "";
+      var path = href.replace(SITE, "");
 
-    if (name && path && !seen[path]) {
-      seen[path] = true;
-      novels.push({ name: name.trim(), path: path, cover: cover });
-    }
-  }
+      var cover = imgEl.attr("data-src") || imgEl.attr("data-srcset") || imgEl.attr("src") || "";
 
-  if (novels.length === 0) {
-    var simpleRegex = /<h4[^>]*class="[^"]*entry-title[^"]*"[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*(?:title="([^"]*)")?[^>]*>([^<]*)<\/a>/gi;
-    while ((match = simpleRegex.exec(html)) !== null) {
-      var href = match[1];
-      var title = match[2] || match[3];
-      var p = href.replace(SITE, "");
-      if (title && p && !seen[p] && p.indexOf("/producto/") !== -1) {
-        seen[p] = true;
-
-        var imgSearch = html.indexOf(href);
-        var covr = "";
-        if (imgSearch > -1) {
-          var block = html.substring(Math.max(0, imgSearch - 2000), imgSearch + 500);
-          var imgM = block.match(/data-src="(https:\/\/novelasligeras\.net\/wp-content\/uploads\/[^"]+)"/i);
-          if (imgM) covr = imgM[1];
-        }
-
-        novels.push({ name: title.trim(), path: p, cover: covr });
+      if (cover && cover.indexOf(",") !== -1) {
+        cover = cover.split(",")[0].trim().split(" ")[0];
       }
-    }
-  }
+      if (cover && cover.indexOf("data:image") === 0) {
+        cover = imgEl.attr("data-src") || "";
+      }
 
-  return novels;
-}
-
-var plugin = {
-  id: "novelasligeras-net",
-  name: "Novelas Ligeras (NOVA)",
-  version: "1.1.0",
-  icon: "src/es/novelasligeras/icon.png",
-  site: SITE,
-  filters: undefined,
-
-  popularNovels: function (pageNo, options) {
-    var url = SITE + "/?s=&post_type=product&paged=" + pageNo;
-    return fetch(url).then(function (r) { return r.text(); }).then(function (html) {
-      return extractNovels(html);
+      if (name && path && !seen[path]) {
+        seen[path] = true;
+        novels.push({ name: name, path: path, cover: cover });
+      }
     });
-  },
 
-  parseNovel: function (novelPath) {
-    var url = novelPath.startsWith("http") ? novelPath : SITE + novelPath;
+    return novels;
+  });
+};
 
-    return fetch(url).then(function (r) { return r.text(); }).then(function (html) {
-      var titleM = html.match(/<h1[^>]*class="[^"]*product_title[^"]*"[^>]*>([^<]+)<\/h1>/i);
-      var name = titleM ? titleM[1].trim() : "Sin título";
+NovelasLigerasPlugin.prototype.parseNovel = function (novelPath) {
+  var url = novelPath.startsWith("http") ? novelPath : SITE + novelPath;
 
-      var coverM = html.match(/woocommerce-product-gallery__image[\s\S]*?(?:data-src|src)="(https:\/\/novelasligeras\.net\/wp-content\/uploads\/[^"]+)"/i);
-      var cover = coverM ? coverM[1] : "";
+  return fetchText(url).then(function (body) {
+    var $ = cheerio.load(body);
 
-      var summary = "";
-      var summaryM = html.match(/<div[^>]*class="[^"]*woocommerce-product-details__short-description[^"]*"[^>]*>([\s\S]*?)<\/div>/i);
-      if (summaryM) {
-        var pTags = summaryM[1].match(/<p[^>]*>([\s\S]*?)<\/p>/gi) || [];
-        summary = pTags
-          .map(function (p) { return p.replace(/<[^>]+>/g, "").trim(); })
-          .filter(function (t) { return t.length > 5 && t.indexOf("Sinopsis por") === -1; })
-          .join("\n\n");
+    var name = $("h1.product_title.entry-title").text().trim() ||
+               $("h1").first().text().trim() || "Sin título";
+
+    var coverEl = $(".woocommerce-product-gallery__image img").first();
+    var cover = coverEl.attr("data-src") || coverEl.attr("data-large_image") || coverEl.attr("src") || "";
+
+    var summary = "";
+    $(".woocommerce-product-details__short-description p").each(function (i, el) {
+      var text = $(el).text().trim();
+      if (text && text.indexOf("Sinopsis por") === -1) {
+        summary += (summary ? "\n\n" : "") + text;
       }
+    });
 
-      var genres = [];
-      var genreRegex = /<span[^>]*class="[^"]*posted_in[^"]*"[^>]*>[\s\S]*?<\/span>/i;
-      var genreBlock = html.match(genreRegex);
-      if (genreBlock) {
-        var gLinks = genreBlock[0].match(/<a[^>]+rel="tag"[^>]*>([^<]+)<\/a>/gi) || [];
-        gLinks.forEach(function (a) {
-          var gm = a.match(/>([^<]+)</);
-          if (gm) genres.push(gm[1].trim());
-        });
-      }
+    var genres = [];
+    $("span.posted_in a[rel='tag']").each(function (i, el) {
+      var g = $(el).text().trim();
+      if (g) genres.push(g);
+    });
+    $("span.tagged_as a[rel='tag']").each(function (i, el) {
+      var t = $(el).text().trim();
+      if (t) genres.push(t);
+    });
 
-      var tagBlock = html.match(/<span[^>]*class="[^"]*tagged_as[^"]*"[^>]*>[\s\S]*?<\/span>/i);
-      if (tagBlock) {
-        var tLinks = tagBlock[0].match(/<a[^>]+rel="tag"[^>]*>([^<]+)<\/a>/gi) || [];
-        tLinks.forEach(function (a) {
-          var tm = a.match(/>([^<]+)</);
-          if (tm) genres.push(tm[1].trim());
-        });
-      }
+    var articleClasses = $("article.product").attr("class") || "";
+    var status = NovelStatus.Ongoing;
+    if (articleClasses.indexOf("pa_estado-completado") !== -1 ||
+        articleClasses.indexOf("pa_estado-finalizado") !== -1) {
+      status = NovelStatus.Completed;
+    }
 
-      var articleClasses = "";
-      var artM = html.match(/<article[^>]*class="([^"]*product[^"]*)"/i);
-      if (artM) articleClasses = artM[1];
+    var author = "";
+    var authorMatch = articleClasses.match(/pa_escritor-([^\s]+)/);
+    if (authorMatch) {
+      author = authorMatch[1].replace(/-/g, " ");
+      author = author.charAt(0).toUpperCase() + author.slice(1);
+    }
 
-      var status = "Ongoing";
-      if (articleClasses.indexOf("pa_estado-completado") !== -1 || articleClasses.indexOf("pa_estado-finalizado") !== -1) {
-        status = "Completed";
-      }
+    var chapters = [];
+    var chapterNum = 1;
+    var seenPaths = {};
 
-      var author = "";
-      var authorM = articleClasses.match(/pa_escritor-([^\s]+)/);
-      if (authorM) {
-        author = authorM[1].replace(/-/g, " ");
-      }
+    $("#tab-description a, .wpb_tour a, .woocommerce-Tabs-panel--description a").each(function (i, el) {
+      var href = $(el).attr("href") || "";
+      var chName = $(el).text().trim();
 
-      var chapters = [];
-      var chNum = 1;
-      var seenCh = {};
+      if (href.indexOf(SITE) !== -1 &&
+          href.indexOf("/producto/") === -1 &&
+          href.indexOf("#") === -1 &&
+          chName.length > 0) {
 
-      var descBlock = html.match(/id="tab-description"[\s\S]*?(?=<div[^>]*id="tab-(?:reviews|additional_information)"|<\/div>\s*<\/div>\s*<\/div>\s*<div[^>]*class="[^"]*related)/i);
-      var descHtml = descBlock ? descBlock[0] : html;
+        var chPath = href.replace(SITE, "");
 
-      var chLinkRegex = /<a[^>]+href="(https?:\/\/novelasligeras\.net\/index\.php\/\d{4}\/\d{2}\/\d{2}\/[^"]+)"[^>]*>([^<]+)<\/a>/gi;
-      var chMatch;
-      while ((chMatch = chLinkRegex.exec(descHtml)) !== null) {
-        var chPath = chMatch[1].replace(SITE, "");
-        var chName = chMatch[2].trim();
-        if (chName && !seenCh[chPath]) {
-          seenCh[chPath] = true;
+        if (!seenPaths[chPath]) {
+          seenPaths[chPath] = true;
           chapters.push({
             name: chName,
             path: chPath,
-            chapterNumber: chNum++
+            chapterNumber: chapterNum++
           });
         }
       }
-
-      return {
-        name: name,
-        path: novelPath,
-        cover: cover,
-        summary: summary,
-        author: author,
-        status: status,
-        genres: genres,
-        chapters: chapters
-      };
     });
-  },
 
-  parseChapter: function (chapterPath) {
-    var url = chapterPath.startsWith("http") ? chapterPath : SITE + chapterPath;
-
-    return fetch(url).then(function (r) { return r.text(); }).then(function (html) {
-      var contentM = html.match(/<div[^>]*class="[^"]*entry-content[^"]*"[^>]*>([\s\S]*?)<\/article>/i) ||
-                     html.match(/<div[^>]*class="[^"]*entry-content[^"]*"[^>]*>([\s\S]*?)(?:<div[^>]*class="[^"]*author-info|<div[^>]*id="comments)/i);
-
-      if (!contentM) return "<p>No se pudo cargar el capítulo.</p>";
-
-      var content = contentM[1];
-
-      content = content
-        .replace(/<script[\s\S]*?<\/script>/gi, "")
-        .replace(/<style[\s\S]*?<\/style>/gi, "")
-        .replace(/<ins[^>]*class="[^"]*adsbygoogle[^"]*"[\s\S]*?<\/ins>/gi, "")
-        .replace(/<a[^>]*class="[^"]*track-ad[^"]*"[\s\S]*?<\/a>/gi, "")
-        .replace(/<div[^>]*class="[^"]*vc_custom_1512571244059[^"]*"[\s\S]*?<\/div>\s*<\/div>\s*<\/div>\s*<\/div>/gi, "")
-        .replace(/<div[^>]*class="[^"]*btn-align-(?:left|center|right)[^"]*"[\s\S]*?<\/div>/gi, "");
-
-      content = content.replace(/<img[^>]+>/gi, function (imgTag) {
-        var dataSrc = extractAttr(imgTag, "data-src");
-        var src = extractAttr(imgTag, "src");
-        var realSrc = dataSrc || src;
-        if (realSrc && realSrc.indexOf("data:image") !== 0 && realSrc.indexOf("wp-content/uploads") !== -1) {
-          return '<p style="text-align:center;"><img src="' + realSrc + '" style="max-width:100%;height:auto;" /></p>';
-        }
-        return "";
-      });
-
-      return content;
-    });
-  },
-
-  searchNovels: function (searchTerm, pageNo) {
-    var url = SITE + "/?s=" + encodeURIComponent(searchTerm) + "&post_type=product&paged=" + pageNo;
-    return fetch(url).then(function (r) { return r.text(); }).then(function (html) {
-      return extractNovels(html);
-    });
-  },
-
-  fetchImage: function (url) {
-    return fetch(url, { headers: { Referer: SITE } });
-  }
+    return {
+      name: name,
+      path: novelPath,
+      cover: cover,
+      summary: summary,
+      author: author,
+      status: status,
+      genres: genres,
+      chapters: chapters
+    };
+  });
 };
 
-exports.default = plugin;
+NovelasLigerasPlugin.prototype.parseChapter = function (chapterPath) {
+  var url = chapterPath.startsWith("http") ? chapterPath : SITE + chapterPath;
+
+  return fetchText(url).then(function (body) {
+    var $ = cheerio.load(body);
+
+    var contentEl = $(".entry-content .wpb-content-wrapper").first();
+    if (contentEl.length === 0) {
+      contentEl = $(".entry-content").first();
+    }
+
+    contentEl.find("script, style, .adsbygoogle, ins, .track-ad, .author-info, #comments, .comments-area").remove();
+
+    contentEl.find("a").each(function (i, el) {
+      var aEl = $(el);
+      var text = aEl.text().trim().toLowerCase();
+      if (text === "anterior" || text === "siguiente" || text === "indice" || text === "índice") {
+        aEl.closest(".vc_row, .vc_column_inner, div").first().remove();
+      }
+    });
+
+    contentEl.find("div").each(function (i, el) {
+      var div = $(el);
+      if (div.find("a.track-ad").length > 0) {
+        div.remove();
+      }
+    });
+
+    contentEl.find("img").each(function (i, el) {
+      var img = $(el);
+      var realSrc = img.attr("data-src") || img.attr("src") || "";
+      if (realSrc && realSrc.indexOf("data:image") !== 0) {
+        img.attr("src", realSrc);
+        img.removeAttr("data-src");
+        img.removeAttr("data-srcset");
+        img.removeAttr("srcset");
+        img.css("max-width", "100%");
+        img.css("height", "auto");
+      }
+    });
+
+    return contentEl.html() || "<p>No se pudo cargar el capítulo.</p>";
+  });
+};
+
+NovelasLigerasPlugin.prototype.searchNovels = function (searchTerm, pageNo) {
+  var url = SITE + "/?s=" + encodeURIComponent(searchTerm) + "&post_type=product&paged=" + (pageNo || 1);
+  return fetchText(url).then(function (body) {
+    var $ = cheerio.load(body);
+    var novels = [];
+    var seen = {};
+
+    $("div.wf-cell").each(function (i, el) {
+      var cell = $(el);
+      var linkEl = cell.find("h4.entry-title a").first();
+      var imgEl = cell.find("img.attachment-woocommerce_thumbnail, img.iso-lazy-load, img.preload-me").first();
+
+      var name = linkEl.attr("title") || linkEl.text().trim();
+      var href = linkEl.attr("href") || "";
+      var path = href.replace(SITE, "");
+
+      var cover = imgEl.attr("data-src") || imgEl.attr("data-srcset") || imgEl.attr("src") || "";
+
+      if (cover && cover.indexOf(",") !== -1) {
+        cover = cover.split(",")[0].trim().split(" ")[0];
+      }
+      if (cover && cover.indexOf("data:image") === 0) {
+        cover = imgEl.attr("data-src") || "";
+      }
+
+      if (name && path && !seen[path]) {
+        seen[path] = true;
+        novels.push({ name: name, path: path, cover: cover });
+      }
+    });
+
+    return novels;
+  });
+};
+
+NovelasLigerasPlugin.prototype.fetchImage = function (url) {
+  return fetchApi(url, { headers: { Referer: SITE } }).then(function (r) {
+    return r.arrayBuffer();
+  });
+};
+
+exports.default = new NovelasLigerasPlugin();
