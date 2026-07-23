@@ -4,26 +4,46 @@ Object.defineProperty(exports, "__esModule", { value: true });
 var cheerio = require("cheerio");
 var fetchModule = require("@libs/fetch");
 var fetchApi = fetchModule.fetchApi || fetchModule;
-var fetchText = fetchModule.fetchText || function(url, options) {
-  return fetchApi(url, options).then(function(r) { return r.text(); });
+var fetchText = fetchModule.fetchText || function (url, init) {
+  return fetchApi(url, init).then(function (res) { return res.text(); });
 };
+var defaultCover = require("@libs/defaultCover");
 var novelStatus = require("@libs/novelStatus");
-var NovelStatus = novelStatus.NovelStatus || { Ongoing: "Ongoing", Completed: "Completed", Unknown: "Unknown" };
 
-var SITE = "https://novelasligeras.net";
+var SITE = "https://novelasligeras.net/";
 
 var NovelasLigerasPlugin = function () {
-  this.id = "novelasligeras-net";
+  this.id = "novelasligeras";
   this.name = "Novelas Ligeras (NOVA)";
-  this.version = "2.0.0";
-  this.icon = "https://raw.githubusercontent.com/MaxRay1/Extensiones-IReader/main/icon.png";
+  this.version = "2.1.0";
+  this.icon = "src/es/novelasligeras/icon.png";
   this.site = SITE;
+  this.baseUrl = SITE;
   this.filters = undefined;
 };
 
+function checkCloudflare(html) {
+  if (html && (
+    html.indexOf("Just a moment...") !== -1 ||
+    html.indexOf("cf-challenge-running") !== -1 ||
+    html.indexOf("Attention Required! | Cloudflare") !== -1 ||
+    html.indexOf("clouflare") !== -1
+  )) {
+    throw new Error("Cloudflare activado. Por favor, abre el sitio en WebView para resolver la protección.");
+  }
+}
+
 NovelasLigerasPlugin.prototype.popularNovels = function (pageNo, options) {
-  var url = SITE + "/?s=&post_type=product&paged=" + (pageNo || 1);
-  return fetchText(url).then(function (body) {
+  var url = SITE + "?s=&post_type=product&paged=" + (pageNo || 1);
+
+  return fetchText(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Referer": SITE
+    }
+  }).then(function (body) {
+    checkCloudflare(body);
+
     var $ = cheerio.load(body);
     var novels = [];
     var seen = {};
@@ -35,15 +55,15 @@ NovelasLigerasPlugin.prototype.popularNovels = function (pageNo, options) {
 
       var name = linkEl.attr("title") || linkEl.text().trim();
       var href = linkEl.attr("href") || "";
-      var path = href.replace(SITE, "");
+      var path = href.replace("https://novelasligeras.net", "");
 
-      var cover = imgEl.attr("data-src") || imgEl.attr("data-srcset") || imgEl.attr("src") || "";
+      var cover = imgEl.attr("data-src") || imgEl.attr("data-srcset") || imgEl.attr("src") || defaultCover.defaultCover || "";
 
       if (cover && cover.indexOf(",") !== -1) {
         cover = cover.split(",")[0].trim().split(" ")[0];
       }
       if (cover && cover.indexOf("data:image") === 0) {
-        cover = imgEl.attr("data-src") || "";
+        cover = imgEl.attr("data-src") || defaultCover.defaultCover || "";
       }
 
       if (name && path && !seen[path]) {
@@ -57,16 +77,23 @@ NovelasLigerasPlugin.prototype.popularNovels = function (pageNo, options) {
 };
 
 NovelasLigerasPlugin.prototype.parseNovel = function (novelPath) {
-  var url = novelPath.startsWith("http") ? novelPath : SITE + novelPath;
+  var url = novelPath.startsWith("http") ? novelPath : SITE + (novelPath.startsWith("/") ? novelPath.slice(1) : novelPath);
 
-  return fetchText(url).then(function (body) {
+  return fetchText(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Referer": SITE
+    }
+  }).then(function (body) {
+    checkCloudflare(body);
+
     var $ = cheerio.load(body);
 
     var name = $("h1.product_title.entry-title").text().trim() ||
                $("h1").first().text().trim() || "Sin título";
 
     var coverEl = $(".woocommerce-product-gallery__image img").first();
-    var cover = coverEl.attr("data-src") || coverEl.attr("data-large_image") || coverEl.attr("src") || "";
+    var cover = coverEl.attr("data-src") || coverEl.attr("data-large_image") || coverEl.attr("src") || defaultCover.defaultCover || "";
 
     var summary = "";
     $(".woocommerce-product-details__short-description p").each(function (i, el) {
@@ -87,10 +114,10 @@ NovelasLigerasPlugin.prototype.parseNovel = function (novelPath) {
     });
 
     var articleClasses = $("article.product").attr("class") || "";
-    var status = NovelStatus.Ongoing;
+    var status = novelStatus.NovelStatus ? novelStatus.NovelStatus.Ongoing : "Ongoing";
     if (articleClasses.indexOf("pa_estado-completado") !== -1 ||
         articleClasses.indexOf("pa_estado-finalizado") !== -1) {
-      status = NovelStatus.Completed;
+      status = novelStatus.NovelStatus ? novelStatus.NovelStatus.Completed : "Completed";
     }
 
     var author = "";
@@ -108,12 +135,12 @@ NovelasLigerasPlugin.prototype.parseNovel = function (novelPath) {
       var href = $(el).attr("href") || "";
       var chName = $(el).text().trim();
 
-      if (href.indexOf(SITE) !== -1 &&
+      if (href.indexOf("novelasligeras.net") !== -1 &&
           href.indexOf("/producto/") === -1 &&
           href.indexOf("#") === -1 &&
           chName.length > 0) {
 
-        var chPath = href.replace(SITE, "");
+        var chPath = href.replace("https://novelasligeras.net", "");
 
         if (!seenPaths[chPath]) {
           seenPaths[chPath] = true;
@@ -140,9 +167,16 @@ NovelasLigerasPlugin.prototype.parseNovel = function (novelPath) {
 };
 
 NovelasLigerasPlugin.prototype.parseChapter = function (chapterPath) {
-  var url = chapterPath.startsWith("http") ? chapterPath : SITE + chapterPath;
+  var url = chapterPath.startsWith("http") ? chapterPath : SITE + (chapterPath.startsWith("/") ? chapterPath.slice(1) : chapterPath);
 
-  return fetchText(url).then(function (body) {
+  return fetchText(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Referer": SITE
+    }
+  }).then(function (body) {
+    checkCloudflare(body);
+
     var $ = cheerio.load(body);
 
     var contentEl = $(".entry-content .wpb-content-wrapper").first();
@@ -185,8 +219,16 @@ NovelasLigerasPlugin.prototype.parseChapter = function (chapterPath) {
 };
 
 NovelasLigerasPlugin.prototype.searchNovels = function (searchTerm, pageNo) {
-  var url = SITE + "/?s=" + encodeURIComponent(searchTerm) + "&post_type=product&paged=" + (pageNo || 1);
-  return fetchText(url).then(function (body) {
+  var url = SITE + "?s=" + encodeURIComponent(searchTerm) + "&post_type=product&paged=" + (pageNo || 1);
+
+  return fetchText(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Referer": SITE
+    }
+  }).then(function (body) {
+    checkCloudflare(body);
+
     var $ = cheerio.load(body);
     var novels = [];
     var seen = {};
@@ -198,15 +240,15 @@ NovelasLigerasPlugin.prototype.searchNovels = function (searchTerm, pageNo) {
 
       var name = linkEl.attr("title") || linkEl.text().trim();
       var href = linkEl.attr("href") || "";
-      var path = href.replace(SITE, "");
+      var path = href.replace("https://novelasligeras.net", "");
 
-      var cover = imgEl.attr("data-src") || imgEl.attr("data-srcset") || imgEl.attr("src") || "";
+      var cover = imgEl.attr("data-src") || imgEl.attr("data-srcset") || imgEl.attr("src") || defaultCover.defaultCover || "";
 
       if (cover && cover.indexOf(",") !== -1) {
         cover = cover.split(",")[0].trim().split(" ")[0];
       }
       if (cover && cover.indexOf("data:image") === 0) {
-        cover = imgEl.attr("data-src") || "";
+        cover = imgEl.attr("data-src") || defaultCover.defaultCover || "";
       }
 
       if (name && path && !seen[path]) {
@@ -220,7 +262,12 @@ NovelasLigerasPlugin.prototype.searchNovels = function (searchTerm, pageNo) {
 };
 
 NovelasLigerasPlugin.prototype.fetchImage = function (url) {
-  return fetchApi(url, { headers: { Referer: SITE } }).then(function (r) {
+  return fetchApi(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Referer": SITE
+    }
+  }).then(function (r) {
     return r.arrayBuffer();
   });
 };
