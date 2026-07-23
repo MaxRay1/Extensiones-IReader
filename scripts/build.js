@@ -58,14 +58,16 @@ async function buildRepository() {
       const siteMatch = content.match(/site:\s*["']([^"']+)["']/);
       const versionMatch = content.match(/version:\s*["']([^"']+)["']/);
 
+      const BASE_URL = (process.env.BASE_URL || 'https://maxray1.github.io/Extensiones-IReader').replace(/\/$/, '');
+
       const pluginMeta = {
         id: idMatch ? idMatch[1] : filename,
         name: nameMatch ? nameMatch[1] : filename,
         site: siteMatch ? siteMatch[1] : '',
         lang: lang,
         version: versionMatch ? versionMatch[1] : '1.0.0',
-        url: `plugins/${lang}/${filename}.js`,
-        iconUrl: `icons/${filename}.png`
+        url: `${BASE_URL}/plugins/${lang}/${filename}.js`,
+        iconUrl: `${BASE_URL}/icons/${filename}.png`
       };
 
       index.push(pluginMeta);
